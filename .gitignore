@@ -1,0 +1,66 @@
+# ==========================================
+# Secrets and authentication
+# ==========================================
+.env
+.env.*
+!.env.example
+
+*credentials*.json
+*token*.json
+*secret*.json
+client_secret*
+*.pem
+*.key
+*.p12
+
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# ==========================================
+# SQLite and persistent analytics data
+# ==========================================
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+data/
+backups/
+
+# ==========================================
+# Logs and runtime files
+# ==========================================
+*.log
+logs/
+tmp/
+temp/
+*.pid
+
+# ==========================================
+# Synology and macOS
+# ==========================================
+@eaDir/
+.DS_Store
+.AppleDouble
+._*
+
+# ==========================================
+# IDE and editor
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
