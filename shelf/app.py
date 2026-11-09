@@ -16,7 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .auth import Provider
 from .config import Settings
 from .store import Store
-from .youtube import AnalyticsQuery, GoogleAPIError, YouTube
+from .youtube import AgeComparisonQuery, AnalyticsQuery, GoogleAPIError, YouTube
 
 
 def create_app(settings=None):
@@ -60,6 +60,16 @@ def create_app(settings=None):
     async def compare_videos(video_ids: list[str], start_date: str, end_date: str, refresh: bool = False) -> dict:
         """Compare up to 50 videos over one calendar date range; this is not an equal-age comparison."""
         return await run_in_threadpool(youtube.compare, video_ids, start_date, end_date, refresh)
+
+    @mcp.tool(annotations=annotation)
+    async def compare_videos_by_age(query: AgeComparisonQuery, refresh: bool = False) -> dict:
+        """Compare 1–50 owned videos over their first 1–90 YouTube reporting days.
+
+        Publication day is day 1 (possibly partial), not an exact 24-hour window.
+        Missing data remains unknown. Persistent lifetime observations are separate
+        actual samples with timestamps and offsets from the requested elapsed age.
+        """
+        return await run_in_threadpool(youtube.compare_by_age, query.video_ids, query.age_days, refresh)
 
     @mcp.tool(annotations=annotation)
     async def list_bulk_reports(kind: str = "reportTypes", job_id: str = "", page_token: str = "") -> dict:
@@ -126,6 +136,10 @@ def create_app(settings=None):
     @app.post("/api/analytics")
     async def api_analytics(query: AnalyticsQuery, refresh: bool = False):
         return await query_analytics(query, refresh)
+
+    @app.post("/api/compare-videos-by-age")
+    async def api_compare_videos_by_age(query: AgeComparisonQuery, refresh: bool = False):
+        return await compare_videos_by_age(query, refresh)
 
     app.mount("/", mcp_app)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlsplit(settings.public_url).hostname, "127.0.0.1", "localhost"])

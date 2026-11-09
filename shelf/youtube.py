@@ -3,7 +3,8 @@ import os
 import re
 import tempfile
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 from google.auth.transport.requests import Request
@@ -57,6 +58,18 @@ class GoogleAPIError(Exception):
         super().__init__(message)
 
 
+class AgeComparisonQuery(BaseModel):
+    video_ids: list[str] = Field(min_length=1, max_length=50)
+    age_days: int = Field(default=7, ge=1, le=90, strict=True)
+
+    @model_validator(mode="after")
+    def validate_ids(self):
+        if any(not re.fullmatch(r"[A-Za-z0-9_-]{11}", v) for v in self.video_ids):
+            raise ValueError("Provide valid 11-character YouTube video IDs")
+        self.video_ids = list(dict.fromkeys(self.video_ids))
+        return self
+
+
 class YouTube:
     def __init__(self, settings, store):
         self.settings, self.store = settings, store
@@ -93,8 +106,28 @@ class YouTube:
                 raise GoogleAPIError(result.status_code, str(message)[:1000])
             response = {"data": result.json(), "cached": False,
                         "fetched_at": datetime.now(timezone.utc).isoformat(), "source": service}
+            if service == "data" and path == "videos":
+                self.observe_videos(response)
             self.store.put("cache", key, response, 900)
             return response
+
+    def observe_videos(self, response):
+        """Persist actual API samples, using fetch time rather than cache-read time."""
+        observed = datetime.fromisoformat(response["fetched_at"])
+        for video in response["data"].get("items", []):
+            snippet = video.get("snippet", {})
+            if snippet.get("channelId") != self.settings.channel_id:
+                continue
+            published = snippet.get("publishedAt")
+            if not published or not video.get("statistics"):
+                continue
+            age = (observed - datetime.fromisoformat(published.replace("Z", "+00:00"))).total_seconds()
+            if age < 0:
+                continue
+            self.store.save_observation(self.settings.channel_id, video["id"], {
+                "observed_at": response["fetched_at"], "published_at": published,
+                "age_seconds": age, "statistics": video["statistics"],
+                "source": "youtube_data_api"})
 
     def channel(self, refresh=False):
         result = self.request("data", "channels", {"part": "snippet,statistics,contentDetails", "mine": "true"}, refresh)
@@ -145,6 +178,62 @@ class YouTube:
             raise ValueError("Provide 1–50 valid video IDs")
         return self.analytics(AnalyticsQuery(start_date=start_date, end_date=end_date,
             dimensions="video", filters="video==" + ",".join(ids), sort="-views"), refresh)
+
+    def compare_by_age(self, video_ids, age_days=7, refresh=False):
+        query = AgeComparisonQuery(video_ids=video_ids, age_days=age_days)
+        self.channel(refresh)
+        details = self.request("data", "videos", {
+            "part": "snippet,statistics", "id": ",".join(query.video_ids)}, refresh)
+        videos = {v["id"]: v for v in details["data"].get("items", [])}
+        reporting_zone = ZoneInfo("America/Los_Angeles")
+        today = datetime.now(reporting_zone).date()
+        results = []
+        additive = ("views", "estimatedMinutesWatched", "subscribersGained", "subscribersLost")
+        for video_id in query.video_ids:
+            item = {"video_id": video_id, "totals": None, "daily": [], "observations": []}
+            results.append(item)
+            video = videos.get(video_id)
+            if video is None:
+                item["status"] = "unavailable"
+                continue
+            snippet = video["snippet"]
+            if snippet["channelId"] != self.settings.channel_id:
+                item["status"] = "wrong_channel"
+                continue
+            published = datetime.fromisoformat(snippet["publishedAt"].replace("Z", "+00:00"))
+            start = published.astimezone(reporting_zone).date()
+            end = start + timedelta(days=query.age_days - 1)
+            item.update(title=snippet["title"], published_at=snippet["publishedAt"],
+                        start_date=start.isoformat(), end_date=end.isoformat(),
+                        metadata_fetched_at=details["fetched_at"], metadata_cached=details["cached"])
+            item["observations"] = [
+                {**o, "offset_from_target_seconds": o["age_seconds"] - query.age_days * 86400}
+                for o in self.store.observations_near(self.settings.channel_id, video_id, query.age_days * 86400)
+                if o["published_at"] == snippet["publishedAt"]]
+            if end >= today:
+                item["status"] = "window_not_finished"
+                continue
+            report = self.analytics(AnalyticsQuery(start_date=start, end_date=end,
+                metrics=",".join(additive), dimensions="day", filters="video==" + video_id), refresh)
+            records = report["records"]
+            expected = {(start + timedelta(days=i)).isoformat() for i in range(query.age_days)}
+            present = {r["day"] for r in records}
+            complete = present == expected and len(records) == query.age_days and all(
+                all(r.get(m) is not None for m in additive) for r in records)
+            item.update(status="reported" if complete else "incomplete_data",
+                        daily=[{**r, "age_day": (date.fromisoformat(r["day"]) - start).days + 1}
+                               for r in records],
+                        missing_days=sorted(expected - present),
+                        fetched_at=report["fetched_at"], cached=report["cached"])
+            if complete:
+                item["totals"] = {metric: sum(r[metric] for r in records) for metric in additive}
+        return {"age_days": query.age_days, "basis": "publication_reporting_day_is_day_1",
+                "reporting_timezone": "America/Los_Angeles", "videos": results,
+                "note": "Day 1 is the possibly partial publication day in YouTube's reporting timezone; "
+                        "these are not exact elapsed 24-hour windows. Missing days are unknown, not zero. "
+                        "Reported data may lag or be revised. Observations are lifetime Data API samples "
+                        "at their stated ages, never estimates of exact milestone performance. "
+                        "No automatic Shorts/long-form classification or ranking is applied."}
 
     def reporting(self, kind="reportTypes", job_id="", page_token=""):
         self.channel()

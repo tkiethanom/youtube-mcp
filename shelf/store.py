@@ -12,12 +12,21 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS kv (kind TEXT, key TEXT, value TEXT, expires REAL, PRIMARY KEY(kind,key))")
+            db.execute("""CREATE TABLE IF NOT EXISTS video_observations (
+                channel_id TEXT, video_id TEXT, observed_at TEXT, age_seconds REAL,
+                value TEXT, PRIMARY KEY(channel_id, video_id, observed_at))""")
+            db.execute("""CREATE INDEX IF NOT EXISTS observations_by_age
+                ON video_observations(channel_id, video_id, age_seconds)""")
         path.chmod(0o600)
 
     @contextmanager
     def db(self):
-        with sqlite3.connect(self.path, timeout=15) as db:
-            yield db
+        db = sqlite3.connect(self.path, timeout=15)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     @staticmethod
     def key(value):
@@ -40,3 +49,20 @@ class Store:
     def clear_auth(self):
         with self.db() as db:
             db.execute("DELETE FROM kv WHERE kind != 'cache'")
+
+    def save_observation(self, channel_id, video_id, observation):
+        with self.db() as db:
+            db.execute("INSERT OR IGNORE INTO video_observations VALUES (?,?,?,?,?)",
+                       (channel_id, video_id, observation["observed_at"],
+                        observation["age_seconds"], json.dumps(observation)))
+
+    def observations_near(self, channel_id, video_id, age_seconds):
+        # Return the closest actual samples on either side, never interpolate.
+        with self.db() as db:
+            rows = []
+            for operator, order in (("<=", "DESC"), (">", "ASC")):
+                rows.extend(db.execute(f"""SELECT value FROM video_observations
+                    WHERE channel_id=? AND video_id=? AND age_seconds {operator} ?
+                    ORDER BY age_seconds {order}, observed_at DESC LIMIT 1""",
+                    (channel_id, video_id, age_seconds)).fetchall())
+            return [json.loads(row[0]) for row in rows]
