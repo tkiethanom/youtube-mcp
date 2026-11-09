@@ -3,12 +3,15 @@
 # ==========================================
 .env
 .env.*
+*.env
+*.env.*
 !.env.example
 
 *credentials*.json
 *token*.json
 *secret*.json
 client_secret*
+google-web-client.json
 *.pem
 *.key
 *.p12
