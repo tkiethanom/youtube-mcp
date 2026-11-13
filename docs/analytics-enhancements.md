@@ -60,3 +60,62 @@ References checked 2026-11-13:
 - https://developers.google.com/youtube/analytics/metrics
 - https://developers.google.com/youtube/reporting/revision_history
 - https://developers.google.com/youtube/reporting/v1/reports/dimensions
+
+## On-demand bulk reports
+
+`create_bulk_reporting_jobs({"report_types": ["channel_traffic_source_a3",
+"channel_reach_basic_a1"]})` creates or reuses active jobs for those exact types.
+This is the only Google mutation in these enhancements, is annotated as a write,
+and requires an explicit invocation. The user authorized both job types. Existing
+Google scopes support creation; no new grant is requested. Incomplete job-list
+pagination stops creation rather than risking duplicate jobs. A network failure
+during creation has an unknown outcome: list jobs before retrying.
+
+`import_bulk_reports(job_id, max_reports=10, page_token="")` downloads a page of
+1–20 generated CSVs. Follow `next_page_token`; no background importer runs. Per
+report failures are returned alongside successful imports. Each CSV is validated
+and imported atomically. The importer only sends credentials to HTTPS Reporting
+API media URLs and refuses redirects, wrong-channel rows, malformed headers/rows,
+non-daily periods and files larger than 64 MiB or one million rows. Unknown CSV
+columns and raw values are preserved. Download URLs/headers are not persisted in
+the archive. Report IDs already imported are not downloaded again.
+
+Each Google report revision is retained. Analysis selects the latest Google
+`createTime` for a given report type and period, including revisions from duplicate
+jobs, rather than adding backfills together. `missing_report_days` lists missing
+imported reports, not missing video rows. Empty reports can cover a day while
+still returning no identifiable sources. Bulk privacy/anonymization rules apply.
+
+HTTP equivalents: `POST /api/bulk/jobs` with the setup object as JSON, and
+`POST /api/bulk/import?job_id=JOB_ID&max_reports=10`.
+
+After a separately authorized deployment, the same operations can run in the
+configured NAS container without exposing credentials:
+
+```bash
+sudo docker compose exec -T shelf python -m shelf.manage_bulk setup
+sudo docker compose exec -T shelf python -m shelf.manage_bulk import --job-id JOB_ID
+```
+
+Google generates daily reports and normally backfills the preceding 30 days for
+a new job. Reports may take 24–48 hours to appear. Historical reports are available
+for download for 30 days; other generated reports for 60 days. On-demand imports
+must happen before expiry if that data is to be retained locally. No automatic
+snapshotting or retrieval is introduced.
+
+Traffic-source CSVs include referring IDs, views, watch minutes and engaged views.
+Reach-basic CSVs include actual `video_thumbnail_impressions` and
+`video_thumbnail_impressions_ctr`; these are not ad/card impressions. Both types
+were returned by the account's reportTypes listing. No job has been created in
+production by this local implementation, because the currently connected MCP
+only exposes read/list operations; creation needs the new code to be deployed.
+
+Verification: the full suite now has 42 passing tests. Bulk fixtures verify
+idempotent creation, pagination safety, archive/revision selection, malformed CSV
+rollback, empty reports, size limits and credential destination restrictions.
+
+Additional references:
+
+- https://developers.google.com/youtube/reporting/v1/reference/rest/v1/jobs/create
+- https://developers.google.com/youtube/reporting/v1/reports
+- https://developers.google.com/youtube/reporting/v1/reports/channel_reports#reach-basic

@@ -170,14 +170,9 @@ class YouTube:
         self.settings, self.store = settings, store
         self.lock = threading.RLock()
 
-    def request(self, service, path, params, refresh=False):
-        key = json.dumps([self.settings.channel_id, service, path, params], sort_keys=True)
+    def credentials(self):
+        """Load/refresh the existing grant; never broaden scopes or replace its location."""
         with self.lock:
-            if not refresh:
-                cached = self.store.get("cache", key)
-                if cached:
-                    return {**cached, "cached": True, "retrieved_at": utc_now(),
-                            "freshness": freshness(service, cached["fetched_at"])}
             token_path = self.settings.data / "youtube-token.json"
             if not token_path.exists():
                 raise GoogleAPIError(503, "YouTube is not connected. Complete the local bootstrap.", category="authorization")
@@ -186,8 +181,19 @@ class YouTube:
                 if not credentials.valid:
                     credentials.refresh(Request())
                     atomic_private_write(token_path, credentials.to_json())
+                return credentials
             except Exception:
                 raise GoogleAPIError(503, "YouTube authorization needs renewal. Run bootstrap again.", category="authorization") from None
+
+    def request(self, service, path, params, refresh=False):
+        key = json.dumps([self.settings.channel_id, service, path, params], sort_keys=True)
+        with self.lock:
+            if not refresh:
+                cached = self.store.get("cache", key)
+                if cached:
+                    return {**cached, "cached": True, "retrieved_at": utc_now(),
+                            "freshness": freshness(service, cached["fetched_at"])}
+            credentials = self.credentials()
             try:
                 result = requests.get(BASES[service] + path, params=params,
                     headers={"Authorization": "Bearer " + credentials.token}, timeout=(10, 45), allow_redirects=False)

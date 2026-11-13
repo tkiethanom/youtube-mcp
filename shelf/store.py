@@ -22,6 +22,17 @@ class Store:
                 request_json TEXT NOT NULL, fetched_at TEXT NOT NULL, response_json TEXT NOT NULL)""")
             db.execute("""CREATE INDEX IF NOT EXISTS analytics_observations_by_query
                 ON analytics_observations(channel_id, request_key, id)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS bulk_reports (
+                channel_id TEXT, report_id TEXT, job_id TEXT, report_type TEXT,
+                start_time TEXT, end_time TEXT, create_time TEXT, imported_at TEXT,
+                content_sha TEXT, metadata_json TEXT,
+                PRIMARY KEY(channel_id, report_id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS bulk_rows (
+                channel_id TEXT, report_id TEXT, row_number INTEGER, day TEXT,
+                video_id TEXT, source_type TEXT, source_detail TEXT, value_json TEXT,
+                PRIMARY KEY(channel_id, report_id, row_number))""")
+            db.execute("""CREATE INDEX IF NOT EXISTS bulk_rows_by_day
+                ON bulk_rows(channel_id, day, video_id)""")
         path.chmod(0o600)
 
     @contextmanager
