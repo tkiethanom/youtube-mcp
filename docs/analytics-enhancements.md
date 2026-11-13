@@ -76,7 +76,9 @@ during creation has an unknown outcome: list jobs before retrying.
 report failures are returned alongside successful imports. Each CSV is validated
 and imported atomically. The importer only sends credentials to HTTPS Reporting
 API media URLs and refuses redirects, wrong-channel rows, malformed headers/rows,
-non-daily periods and files larger than 64 MiB or one million rows. Unknown CSV
+non-daily periods and files larger than 16 MiB or one million rows. Imports are
+serialized within the existing single-worker process to fit the container's
+32 MiB temporary filesystem. Unknown CSV
 columns and raw values are preserved. Download URLs/headers are not persisted in
 the archive. Report IDs already imported are not downloaded again.
 
@@ -110,7 +112,7 @@ were returned by the account's reportTypes listing. No job has been created in
 production by this local implementation, because the currently connected MCP
 only exposes read/list operations; creation needs the new code to be deployed.
 
-Verification: the full suite now has 42 passing tests. Bulk fixtures verify
+Verification at this stage: the full suite had 42 passing tests. Bulk fixtures verify
 idempotent creation, pagination safety, archive/revision selection, malformed CSV
 rollback, empty reports, size limits and credential destination restrictions.
 
@@ -119,3 +121,145 @@ Additional references:
 - https://developers.google.com/youtube/reporting/v1/reference/rest/v1/jobs/create
 - https://developers.google.com/youtube/reporting/v1/reports
 - https://developers.google.com/youtube/reporting/v1/reports/channel_reports#reach-basic
+
+## Consolidated performance
+
+`get_video_performance(query, refresh=false)` takes `video_ids` (1–50),
+`start_date`, and `end_date`. It returns one section per owned upload:
+
+- Raw metadata/lifetime statistics, with Data API fetch provenance.
+- Summary views, engaged views, estimated minutes watched, Google's reported
+  average duration, likes, comments, shares and subscriber gains/losses.
+- A matching daily report for observed reporting coverage, paginated in 200-row
+  pages with an explicit bounded range (maximum 3660 days).
+- Traffic-type and device reports, each queried separately using supported
+  `views,estimatedMinutesWatched` metrics.
+- Daily thumbnail impressions/CTR from imported reach-basic reports when present.
+
+Failures are per section; an authorization or quota failure includes its category
+and action instead of becoming zero data. Missing metadata/wrong-channel uploads
+are not queried. Summary/daily metrics were verified against the live MCP before
+implementation; traffic and device queries follow their separate report tables.
+Daily sums are not substituted for Google's aggregate report. Reach percentages
+remain their original daily values; no unweighted CTR average or inferred click
+count is returned. Missing imports return `not_imported_or_no_rows`.
+
+## Suggested-video sources and creator arguments
+
+`get_suggested_video_sources` accepts one or multiple video IDs using a list,
+one to four labeled date windows, and optional creator/source arguments:
+
+```json
+{
+  "query": {
+    "video_ids": ["VIDEO_ID_01"],
+    "date_ranges": [
+      {"label": "before", "start_date": "2026-10-01", "end_date": "2026-10-28"},
+      {"label": "after", "start_date": "2026-10-29", "end_date": "2026-11-12"}
+    ],
+    "creator": "NoGoodFigures",
+    "source": "analytics",
+    "max_metadata_videos": 500
+  }
+}
+```
+
+`creator` is a query argument, never a hardcoded server creator. It accepts
+`NoGoodFigures`, `@NoGoodFigures`, any other handle, or a stable `UC...` channel ID.
+An empty value means all creators. `resolve_creator(creator, refresh=false)` can
+resolve a handle first. Handles are normalized only by removing one optional
+leading `@`; the Data API `channels.list(forHandle=...)` resolves the actual ID.
+Names are not guessed or substring-matched. Referring video metadata is looked up
+in batches of at most 50 IDs through `videos.list`, preserving absent/private/
+deleted IDs and per-batch fetch times. The metadata resolution budget is
+configurable from 1 to 5000 referring videos (default 500), ordered by observed
+views. Unresolved IDs and lookup failures remain explicit; a creator-filtered
+result is not claimed complete while identities remain unknown.
+
+Analytics mode uses the confirmed baseline exactly: one target upload per query,
+`insightTrafficSourceDetail`, `RELATED_VIDEO`, `views,estimatedMinutesWatched`,
+`-views`, and 25 results. It does not request pages past 25. Bulk mode uses
+on-demand imported traffic-source reports (`traffic_source_type=7`), retaining
+unidentified rows and missing-report dates. The source is explicit; there is no
+silent fallback between top-25 Analytics data and bulk data. Bulk mode streams
+stored CSV rows while aggregating; a 20,000-group budget prevents unbounded
+in-memory results and instructs callers to narrow date/upload selections.
+
+Each range keeps per-upload sources and aggregates by referring video and stable
+channel ID. Windows are compared separately; overlapping ranges are never added
+together. Comparison deltas describe visible results only, and an absent source
+in one window yields unknown delta rather than a zero. Duration remains null for
+these aggregates: the baseline metrics do not establish a compatible denominator.
+Reported average duration is available through the consolidated report; we never
+substitute `minutes*60/views` for Google's duration.
+
+## Cross-video discovery
+
+`analyze_cross_video_discovery(query, refresh=false)` takes `new_video_id`,
+`older_video_ids`, optional `days_before`/`days_after` (default 28 each, maximum
+366), and optional explicit `before`/`after` date-range objects. The default
+before window ends the day before publication; the after window starts on the
+publication reporting day and includes that possibly partial day. Dates use
+America/Los_Angeles, including DST. Explicit windows must be non-overlapping and
+on the appropriate sides of publication.
+
+Only owned videos published before the new upload are queried. Daily views,
+engaged views and watch minutes are returned with page provenance, missing days,
+totals and per-day rates. Missing days/metrics keep totals and deltas null.
+Unfinished default after windows return `window_not_finished`, never silently
+shortened windows. Unequal custom windows include per-day deltas; a zero baseline
+has no percentage change. Results describe correlation, not causation or proven
+referral traffic. Use the suggested-source tool for separate referral evidence.
+
+## Capabilities and audience research
+
+`get_analytics_capabilities(refresh=false)` inspects available report types and
+returns documentation-based capability status. Official Reporting API schemas
+and this account's reportTypes support reach-basic and traffic-source reports.
+Reach metrics were added on January 15, 2026. The old `uniques` metric was
+deprecated in September 2016; surviving catalog mentions are not support. No
+current returning-viewer metric was found in the reviewed catalogs. Neither
+unique nor returning viewers is inferred from subscribedStatus or video views.
+
+If reportTypes has another page, use `list_bulk_reports(kind="reportTypes",
+page_token=...)` to inspect it; capability flags explicitly describe this page.
+
+## New HTTP equivalents and validation
+
+All `/api/` routes require the existing bearer token with `youtube:read`.
+Pass the inner `query` object as the HTTP JSON body (not the MCP wrapper).
+
+| MCP tool | HTTP equivalent |
+| --- | --- |
+| get_video_performance | POST /api/video-performance |
+| get_suggested_video_sources | POST /api/suggested-video-sources |
+| analyze_cross_video_discovery | POST /api/cross-video-discovery |
+| resolve_creator | GET /api/creator?creator=HANDLE |
+| get_analytics_capabilities | GET /api/capabilities |
+
+The three report POST routes accept optional `?refresh=true`. Metadata resolution
+also supports refresh. Input limits/ranges are validated; invalid IDs/date windows
+fail before private reports are fetched. Existing tool names and successful
+response fields remain. New tables preserve all pre-existing data, and all
+destructive production operations remain outside these code changes.
+
+Full validation: **62 mocked tests pass**, including HTTP authentication and MCP
+dispatch, normalized creator handles, stable-ID filtering, metadata batching and
+failures, multi-window comparisons, unknown identities, bulk-source aggregation,
+daily pagination, Pacific/DST windows, per-section errors, zero baselines and
+unknown missing-day totals. Dependency consistency and whitespace checks pass.
+The existing Starlette/httpx deprecation warning remains unchanged.
+
+The new report features are local and not yet deployed. Google reporting jobs
+are authorized but not yet created, because no production mutation tool or NAS
+SSH connection is available in this session. After deployment, run
+`create_bulk_reporting_jobs` (or the setup CLI above), then verify job IDs through
+`list_bulk_reports(kind="jobs")` before importing generated reports. Actual CSV
+import/reach/referral output needs live validation once Google generates files.
+
+Further references:
+
+- https://developers.google.com/youtube/v3/docs/channels/list#forHandle
+- https://developers.google.com/youtube/v3/docs/videos/list
+- https://developers.google.com/youtube/reporting/revision_history#january-15-2026
+- https://developers.google.com/youtube/reporting/revision_history#september-27-2016

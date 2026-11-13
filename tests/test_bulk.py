@@ -112,3 +112,23 @@ class BulkTests(unittest.TestCase):
 
     def test_timezone_offsets_are_normalized_before_revision_selection(self):
         self.assertEqual(timestamp('2025-01-01T08:00:00Z'), timestamp('2025-01-01T00:00:00-08:00'))
+
+    def test_sync_returns_partial_failure_and_next_token(self):
+        self.yt.request.side_effect = [
+            {'data': self.job},
+            {'data': {'reports': [metadata(), metadata('report2')], 'nextPageToken': 'next'},
+             'fetched_at': 'sample-time'}]
+        with patch.object(self.bulk, 'import_report', side_effect=[
+                {'report_id': 'report1', 'status': 'imported'}, ValueError('Invalid CSV')]):
+            result = self.bulk.sync('job1', max_reports=2)
+        self.assertEqual(result['status'], 'partial_failure')
+        self.assertEqual(result['next_page_token'], 'next')
+        self.assertEqual([r['status'] for r in result['reports']], ['imported', 'failed'])
+
+    def test_reach_csv_import_preserves_daily_ctr(self):
+        self.job['reportTypeId'] = REACH_REPORT
+        csv = 'date,channel_id,video_id,video_thumbnail_impressions,video_thumbnail_impressions_ctr\n20250101,owned,abcdefghijk,100,3.5\n'
+        self.import_csv(csv)
+        selection = self.bulk.select(REACH_REPORT, date(2025,1,1), date(2025,1,1))
+        row = list(self.bulk.rows(selection, date(2025,1,1), date(2025,1,1), ['abcdefghijk']))[0]
+        self.assertEqual(row['video_thumbnail_impressions_ctr'], '3.5')

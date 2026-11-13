@@ -18,7 +18,7 @@ from .youtube import BASES, GoogleAPIError
 TRAFFIC_REPORT = 'channel_traffic_source_a3'
 REACH_REPORT = 'channel_reach_basic_a1'
 REPORT_TYPES = (TRAFFIC_REPORT, REACH_REPORT)
-MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
 MAX_CSV_ROWS = 1_000_000
 
 
@@ -104,6 +104,10 @@ class BulkReports:
         raise GoogleAPIError(502, 'Reporting pagination did not finish; no job was created. Try a narrower operation.', source='reporting')
 
     def sync(self, job_id, max_reports=10, page_token=''):
+        with self.yt.lock:
+            return self._sync(job_id, max_reports, page_token)
+
+    def _sync(self, job_id, max_reports=10, page_token=''):
         resource_id(job_id)
         if not 1 <= max_reports <= 20:
             raise ValueError('max_reports must be 1–20; follow next_page_token for more')
@@ -126,6 +130,10 @@ class BulkReports:
                 'note': 'Imports are atomic per report. Retained revisions are selected by latest Google createTime, not summed.'}
 
     def import_report(self, job_id, report_id, *, job=None, metadata=None):
+        with self.yt.lock:
+            return self._import_report(job_id, report_id, job=job, metadata=metadata)
+
+    def _import_report(self, job_id, report_id, *, job=None, metadata=None):
         resource_id(job_id)
         resource_id(report_id)
         if job is None or metadata is None:
@@ -163,7 +171,7 @@ class BulkReports:
                     for chunk in response.iter_content(chunk_size=64 * 1024):
                         size += len(chunk)
                         if size > MAX_DOWNLOAD_BYTES:
-                            raise ValueError('Bulk report exceeds the 64 MiB import limit; no data was imported')
+                            raise ValueError('Bulk report exceeds the 16 MiB import limit; no data was imported')
                         digest.update(chunk)
                         file.write(chunk)
                     file.seek(0)
@@ -176,6 +184,8 @@ class BulkReports:
             raise GoogleAPIError(502, 'Bulk report download failed; no partial report was imported.', category='transport') from None
         except (csv.Error, UnicodeError):
             raise ValueError('Invalid CSV response; no report was imported') from None
+        except OSError:
+            raise GoogleAPIError(503, 'Temporary report storage is unavailable; check container tmpfs space.', category='configuration') from None
         return {'report_id': report_id, 'report_type': report_type, 'status': 'imported',
                 'rows': count, 'retrieved_at': utc_now()}
 

@@ -202,7 +202,13 @@ class YouTube:
             if result.status_code != 200:
                 # Google error messages aid query correction, but never expose request headers.
                 raise GoogleAPIError.from_response(result, service)
-            response = {"data": result.json(), "cached": False,
+            try:
+                data = result.json()
+            except ValueError:
+                raise GoogleAPIError(502, "Google returned an invalid JSON response.", source=service) from None
+            if not isinstance(data, dict):
+                raise GoogleAPIError(502, "Google returned an unexpected response shape.", source=service)
+            response = {"data": data, "cached": False,
                         "fetched_at": datetime.now(timezone.utc).isoformat(), "source": service}
             response.update(retrieved_at=utc_now(), freshness=freshness(service, response["fetched_at"]))
             if service == "analytics" and path == "reports":
@@ -324,7 +330,9 @@ class YouTube:
         results = []
         additive = ("views", "estimatedMinutesWatched", "subscribersGained", "subscribersLost")
         for video_id in query.video_ids:
-            item = {"video_id": video_id, "totals": None, "daily": [], "observations": []}
+            item = {"video_id": video_id, "totals": None, "daily": [], "observations": [],
+                    "metadata_fetched_at": details["fetched_at"],
+                    "freshness": freshness("data", details["fetched_at"])}
             results.append(item)
             video = videos.get(video_id)
             if video is None:
@@ -358,7 +366,8 @@ class YouTube:
                         daily=[{**r, "age_day": (date.fromisoformat(r["day"]) - start).days + 1}
                                for r in records],
                         missing_days=sorted(expected - present),
-                        fetched_at=report["fetched_at"], cached=report["cached"])
+                        fetched_at=report["fetched_at"], cached=report["cached"],
+                        freshness=freshness("analytics", report["fetched_at"], records=records))
             if complete:
                 item["totals"] = {metric: sum(r[metric] for r in records) for metric in additive}
         return {"age_days": query.age_days, "basis": "publication_reporting_day_is_day_1",
