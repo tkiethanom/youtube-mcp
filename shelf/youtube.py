@@ -49,6 +49,23 @@ class AnalyticsQuery(BaseModel):
             raise ValueError("end_date cannot be in the future")
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(,[A-Za-z][A-Za-z0-9]*)*", self.metrics):
             raise ValueError("metrics must be a comma-separated list of metric names")
+        # Channel traffic-source detail has stricter limits than generic reports.
+        # https://developers.google.com/youtube/analytics/channel_reports#traffic-source-detail
+        if "insightTrafficSourceDetail" in self.dimensions.split(","):
+            if self.max_results > 25:
+                raise ValueError("insightTrafficSourceDetail requires max_results <= 25")
+            if self.sort not in ("-views", "-estimatedMinutesWatched"):
+                raise ValueError("insightTrafficSourceDetail requires sort=-views or -estimatedMinutesWatched")
+            if self.sort[1:] not in self.metrics.split(","):
+                raise ValueError("The traffic-source detail sort metric must be included in metrics")
+            supported = {"views", "estimatedMinutesWatched", "engagedViews"}
+            if set(self.metrics.split(",")) - supported:
+                raise ValueError("insightTrafficSourceDetail supports metrics views,estimatedMinutesWatched,engagedViews; "
+                                 "use views,estimatedMinutesWatched for referral reports")
+            if not any(re.fullmatch(r"insightTrafficSourceType==[A-Z_]+", part)
+                       for part in self.filters.split(";")):
+                raise ValueError("insightTrafficSourceDetail requires an insightTrafficSourceType filter, "
+                                 "for example video==VIDEO_ID;insightTrafficSourceType==RELATED_VIDEO")
         return self
 
 
