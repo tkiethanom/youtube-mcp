@@ -86,3 +86,11 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(GoogleAPIError.from_response(response, "analytics").retry_after_seconds, 30)
         response.headers["Retry-After"] = "untrusted"
         self.assertIsNone(GoogleAPIError.from_response(response, "analytics").retry_after_seconds)
+
+    def test_malformed_report_table_is_not_silently_zipped_or_truncated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            yt = YouTube(SimpleNamespace(data=Path(tmp), channel_id='owned'), Mock())
+            yt.channel = Mock()
+            yt.request = Mock(return_value={'data': {'columnHeaders': [{'name': 'views'}], 'rows': [[1, 2]]}})
+            with self.assertRaisesRegex(GoogleAPIError, 'not silently truncated'):
+                yt.analytics(AnalyticsQuery(start_date='2025-01-01', end_date='2025-01-02'))

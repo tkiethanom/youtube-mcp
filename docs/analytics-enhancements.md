@@ -243,7 +243,7 @@ fail before private reports are fetched. Existing tool names and successful
 response fields remain. New tables preserve all pre-existing data, and all
 destructive production operations remain outside these code changes.
 
-Full validation: **62 mocked tests pass**, including HTTP authentication and MCP
+Full validation: **64 mocked tests pass**, including HTTP authentication and MCP
 dispatch, normalized creator handles, stable-ID filtering, metadata batching and
 failures, multi-window comparisons, unknown identities, bulk-source aggregation,
 daily pagination, Pacific/DST windows, per-section errors, zero baselines and
@@ -263,3 +263,27 @@ Further references:
 - https://developers.google.com/youtube/v3/docs/videos/list
 - https://developers.google.com/youtube/reporting/revision_history#january-15-2026
 - https://developers.google.com/youtube/reporting/revision_history#september-27-2016
+
+## Review and rollout status
+
+The previous top-25/error-provenance fix is merged on `main` at `2d6a267`.
+The enhancements in this document are separate local commits on
+`feature/analytics-backlog`, pending review before pushing.
+
+| Backlog item | Implementation/research | Remaining live verification |
+| --- | --- | --- |
+| Watch time | Raw values preserved; discrepancy diagnostics and engaged-metric definitions documented | Matched Studio export if exact remaining differences need investigation |
+| Labels/Browse | Official source labels beside codes; unknown values preserved; supported type/detail queries documented | Compare matched Studio dates without assuming category-total equality |
+| Freshness/history | Fetch/retrieval/observed-date metadata; every fresh Analytics version retained | Confirm migration/history after deployment on a backed-up database |
+| Errors | Categories, safe status/reasons, next steps, retry guidance; malformed tables rejected | Observe genuine upstream errors without deliberately breaking auth or quota |
+| Unified performance | Separate supported summary, daily coverage, traffic/device reports, optional imported reach | New tool dispatch and real returned sections after deployment |
+| Cross-video discovery | Configurable windows; default 28 days each with upload day included after; correlation only | One historical before/after comparison through the new tool |
+| Suggested referrals | Owned uploads/windows, top-25 or explicit bulk, metadata, configurable creators, channel/video aggregation | Resolve chosen handles and verify returned source/creator identities live |
+| Bulk traffic/reach | Explicit job creation/reuse, on-demand imports, revision-aware storage | Create the two authorized jobs, wait for Google reports, import and inspect real CSVs |
+| Audience/CTR research | Supported bulk thumbnail impressions/CTR; deprecated uniques and undocumented returning viewers clearly identified | Verify actual generated reach CSV fields and values |
+| Development tracking | Existing issues #1–#8 retain the acceptance criteria | Close/update issues only as reviewed features are released and live-verified |
+
+Retaining all observations grows the persistent database. On-demand bulk imports
+also need to happen before Google's download expiry; no scheduler is being
+introduced to solve that tradeoff. Keep database and credential backups private.
+The code does not delete history, alter OAuth scopes, or deploy itself.

@@ -272,8 +272,12 @@ class YouTube:
         self.channel()  # Enforce channel identity before returning private analytics.
         params = self.analytics_params(query)
         result = self.request("analytics", "reports", params, refresh)
-        columns = [v["name"] for v in result["data"].get("columnHeaders", [])]
+        headers = result["data"].get("columnHeaders", [])
         rows = result["data"].get("rows", [])
+        if (not isinstance(headers, list) or any(not isinstance(h, dict) or not isinstance(h.get("name"), str) for h in headers)
+                or not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != len(headers) for row in rows)):
+            raise GoogleAPIError(502, "Google returned a malformed Analytics table; columns and rows were not silently truncated.", source="analytics")
+        columns = [v["name"] for v in headers]
         records = [dict(zip(columns, row)) for row in rows]
         is_detail = "insightTrafficSourceDetail" in query.dimensions.split(",")
         next_index = query.start_index + len(rows) if len(rows) == query.max_results else None

@@ -83,7 +83,12 @@ class BulkReports:
                                          category='transport') from None
                 if response.status_code not in (200, 201):
                     raise GoogleAPIError.from_response(response, 'reporting')
-                job = response.json()
+                try:
+                    job = response.json()
+                except ValueError:
+                    job = None
+                if not isinstance(job, dict) or not isinstance(job.get('id'), str) or job.get('reportTypeId') != report_type:
+                    raise GoogleAPIError(502, 'Google returned an invalid job response. List existing jobs before retrying.', source='reporting')
                 jobs.append(job)
                 results.append({'status': 'created', 'job': job})
             return {'jobs': results, 'retrieved_at': utc_now(),

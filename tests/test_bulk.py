@@ -110,6 +110,15 @@ class BulkTests(unittest.TestCase):
             self.bulk.setup(BulkSetupQuery(report_types=[TRAFFIC_REPORT]))
         post.assert_not_called()
 
+    def test_ambiguous_creation_response_instructs_listing_before_retry(self):
+        self.yt.request.side_effect = [
+            {'data': {'reportTypes': [{'id': TRAFFIC_REPORT}]}}, {'data': {'jobs': []}}]
+        response = Mock(status_code=200)
+        response.json.side_effect = ValueError('invalid JSON')
+        with patch('shelf.bulk.requests.post', return_value=response), self.assertRaisesRegex(
+                GoogleAPIError, 'List existing jobs before retrying'):
+            self.bulk.setup(BulkSetupQuery(report_types=[TRAFFIC_REPORT]))
+
     def test_timezone_offsets_are_normalized_before_revision_selection(self):
         self.assertEqual(timestamp('2025-01-01T08:00:00Z'), timestamp('2025-01-01T00:00:00-08:00'))
 
