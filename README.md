@@ -8,6 +8,9 @@ The existing OAuth setup uses local `.env`, `data/google-web-client.json`, and
 
 See [the backlog review](docs/backlog-review.md) for verified findings, open
 questions, GitHub issues, and the proposed implementation order.
+See [analytics enhancements](docs/analytics-enhancements.md) for durable report
+history, freshness/labels/error categories, bulk setup/imports, consolidated
+performance, suggested sources, creator filtering and pre/post discovery tools.
 
 `query_analytics` (HTTP: `POST /api/analytics`) already supports traffic-source
 detail queries. These reports require explicit parameters rather than the

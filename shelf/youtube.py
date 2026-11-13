@@ -11,6 +11,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from pydantic import BaseModel, Field, model_validator
 
+from .analytics_support import annotate_records, freshness, utc_now, watch_time_diagnostics
+
 SCOPES = ["https://www.googleapis.com/auth/youtube.readonly",
           "https://www.googleapis.com/auth/yt-analytics.readonly"]
 BASES = {"data": "https://www.googleapis.com/youtube/v3/",
@@ -73,11 +75,25 @@ class AnalyticsQuery(BaseModel):
 
 
 class GoogleAPIError(Exception):
-    def __init__(self, status, message, *, source=None, reasons=()):
+    def __init__(self, status, message, *, source=None, reasons=(), category=None, retry_after=None):
         self.status, self.message = status, message
         self.source = source
         self.reasons = tuple(dict.fromkeys(reasons))
         self.occurred_at = datetime.now(timezone.utc).isoformat()
+        self.category = category or self.classify(status, self.reasons)
+        actions = {
+            "invalid_query": "Check the report's supported metrics, dimensions, filters, sort and date range.",
+            "authorization": "Check the connected channel and granted scopes; renew authorization if necessary.",
+            "rate_limit": "Wait before retrying; honor retry_after_seconds when supplied.",
+            "quota": "Check the Google project's quota/reset time; do not repeatedly retry.",
+            "unavailable_data": "Check resource ownership and availability; missing data is not zero activity.",
+            "upstream": "Retry later; retain the Google status/reason if the failure persists.",
+            "configuration": "Check API enablement and project configuration.",
+            "transport": "Check connectivity to Google and retry later.",
+        }
+        self.action = actions.get(self.category, "Inspect the Google status and reason before retrying.")
+        self.retryable = self.category in ("rate_limit", "upstream", "transport")
+        self.retry_after_seconds = retry_after
         # FastMCP forwards exception text; include provenance even when Google's
         # message is only "Internal error encountered." Keep raw bodies private.
         context = [f"status={status}"]
@@ -85,7 +101,25 @@ class GoogleAPIError(Exception):
             context.append(f"source={source}")
         if self.reasons:
             context.append("reason=" + ",".join(self.reasons))
-        super().__init__(f"Google API error ({'; '.join(context)}): {message}")
+        context.append("category=" + self.category)
+        super().__init__(f"Google API error ({'; '.join(context)}): {message} Next: {self.action}")
+
+    @staticmethod
+    def classify(status, reasons):
+        reasons = {r.lower() for r in reasons}
+        if reasons & {"quotaexceeded", "dailylimitexceeded", "dailylimitexceededunreg"}:
+            return "quota"
+        if status == 429 or reasons & {"ratelimitexceeded", "userratelimitexceeded", "resource_exhausted"}:
+            return "rate_limit"
+        if reasons & {"accessnotconfigured", "servicedisabled", "api_disabled"}:
+            return "configuration"
+        if status in (401, 403):
+            return "authorization"
+        if status == 404:
+            return "unavailable_data"
+        if status == 400:
+            return "invalid_query"
+        return "upstream" if status >= 500 else "unknown"
 
     @classmethod
     def from_response(cls, result, source):
@@ -108,7 +142,15 @@ class GoogleAPIError(Exception):
             canonical = error.get("status")
             if isinstance(canonical, str) and re.fullmatch(r"[A-Z][A-Z_]{0,99}", canonical):
                 reasons.append(canonical)
-        return cls(result.status_code, message, source=source, reasons=reasons)
+        retry_header = result.headers.get("Retry-After", "")
+        retry_after = int(retry_header) if isinstance(retry_header, str) and re.fullmatch(r"[0-9]{1,8}", retry_header) else None
+        return cls(result.status_code, message, source=source, reasons=reasons, retry_after=retry_after)
+
+    def as_dict(self):
+        return {"error": self.message, "google_status": self.status, "source": self.source,
+                "google_reasons": list(self.reasons), "occurred_at": self.occurred_at,
+                "category": self.category, "action": self.action, "retryable": self.retryable,
+                "retry_after_seconds": self.retry_after_seconds}
 
 
 class AgeComparisonQuery(BaseModel):
@@ -128,33 +170,49 @@ class YouTube:
         self.settings, self.store = settings, store
         self.lock = threading.RLock()
 
+    def credentials(self):
+        """Load/refresh the existing grant; never broaden scopes or replace its location."""
+        with self.lock:
+            token_path = self.settings.data / "youtube-token.json"
+            if not token_path.exists():
+                raise GoogleAPIError(503, "YouTube is not connected. Complete the local bootstrap.", category="authorization")
+            try:
+                credentials = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+                if not credentials.valid:
+                    credentials.refresh(Request())
+                    atomic_private_write(token_path, credentials.to_json())
+                return credentials
+            except Exception:
+                raise GoogleAPIError(503, "YouTube authorization needs renewal. Run bootstrap again.", category="authorization") from None
+
     def request(self, service, path, params, refresh=False):
         key = json.dumps([self.settings.channel_id, service, path, params], sort_keys=True)
         with self.lock:
             if not refresh:
                 cached = self.store.get("cache", key)
                 if cached:
-                    return {**cached, "cached": True}
-            token_path = self.settings.data / "youtube-token.json"
-            if not token_path.exists():
-                raise GoogleAPIError(503, "YouTube is not connected. Complete the local bootstrap.")
-            try:
-                credentials = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-                if not credentials.valid:
-                    credentials.refresh(Request())
-                    atomic_private_write(token_path, credentials.to_json())
-            except Exception:
-                raise GoogleAPIError(503, "YouTube authorization needs renewal. Run bootstrap again.") from None
+                    return {**cached, "cached": True, "retrieved_at": utc_now(),
+                            "freshness": freshness(service, cached["fetched_at"])}
+            credentials = self.credentials()
             try:
                 result = requests.get(BASES[service] + path, params=params,
                     headers={"Authorization": "Bearer " + credentials.token}, timeout=(10, 45), allow_redirects=False)
             except requests.RequestException:
-                raise GoogleAPIError(502, "Google API could not be reached") from None
+                raise GoogleAPIError(502, "Google API could not be reached", category="transport") from None
             if result.status_code != 200:
                 # Google error messages aid query correction, but never expose request headers.
                 raise GoogleAPIError.from_response(result, service)
-            response = {"data": result.json(), "cached": False,
+            try:
+                data = result.json()
+            except ValueError:
+                raise GoogleAPIError(502, "Google returned an invalid JSON response.", source=service) from None
+            if not isinstance(data, dict):
+                raise GoogleAPIError(502, "Google returned an unexpected response shape.", source=service)
+            response = {"data": data, "cached": False,
                         "fetched_at": datetime.now(timezone.utc).isoformat(), "source": service}
+            response.update(retrieved_at=utc_now(), freshness=freshness(service, response["fetched_at"]))
+            if service == "analytics" and path == "reports":
+                response["observation_id"] = self.store.save_analytics(self.settings.channel_id, params, response)
             if service == "data" and path == "videos":
                 self.observe_videos(response)
             self.store.put("cache", key, response, 900)
@@ -196,10 +254,11 @@ class YouTube:
         items = [v for v in details["data"].get("items", []) if query.casefold() in v["snippet"]["title"].casefold()]
         return {"videos": items, "next_page_token": page["data"].get("nextPageToken"),
                 "fetched_at": details["fetched_at"], "cached": details["cached"],
+                "retrieved_at": utc_now(), "source": "data",
+                "freshness": freshness("data", details["fetched_at"]),
                 "note": "Title filtering applies to this page; follow next_page_token even if this page has no matches. Duration alone does not identify Shorts."}
 
-    def analytics(self, query: AnalyticsQuery, refresh=False):
-        self.channel()  # Enforce channel identity before returning private analytics.
+    def analytics_params(self, query):
         params = {"ids": "channel==" + self.settings.channel_id,
                   "startDate": query.start_date.isoformat(), "endDate": query.end_date.isoformat(),
                   "metrics": query.metrics, "maxResults": query.max_results, "startIndex": query.start_index}
@@ -207,9 +266,19 @@ class YouTube:
             value = getattr(query, key)
             if value:
                 params[key] = value
+        return params
+
+    def analytics(self, query: AnalyticsQuery, refresh=False):
+        self.channel()  # Enforce channel identity before returning private analytics.
+        params = self.analytics_params(query)
         result = self.request("analytics", "reports", params, refresh)
-        columns = [v["name"] for v in result["data"].get("columnHeaders", [])]
+        headers = result["data"].get("columnHeaders", [])
         rows = result["data"].get("rows", [])
+        if (not isinstance(headers, list) or any(not isinstance(h, dict) or not isinstance(h.get("name"), str) for h in headers)
+                or not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != len(headers) for row in rows)):
+            raise GoogleAPIError(502, "Google returned a malformed Analytics table; columns and rows were not silently truncated.", source="analytics")
+        columns = [v["name"] for v in headers]
+        records = [dict(zip(columns, row)) for row in rows]
         is_detail = "insightTrafficSourceDetail" in query.dimensions.split(",")
         next_index = query.start_index + len(rows) if len(rows) == query.max_results else None
         if is_detail and next_index is not None and next_index > 25:
@@ -218,7 +287,10 @@ class YouTube:
             "type": "top_results", "rank_limit": 25,
             "completeness": "not_guaranteed",
             "broader_coverage_source": "youtube_reporting_api"}} if is_detail else {}
-        return {**result, "records": [dict(zip(columns, row)) for row in rows],
+        return {**result, "records": annotate_records(records),
+                "retrieved_at": utc_now(),
+                "freshness": freshness("analytics", result.get("fetched_at"), records=records),
+                "metric_diagnostics": watch_time_diagnostics(records),
                 "requested": params, "next_start_index": next_index, **coverage,
                 "note": "Data may lag or be suppressed; empty rows are not proof of zero activity. "
                         + ("Traffic-source detail is treated as a top-25 report ranked by the requested sort. "
@@ -227,6 +299,15 @@ class YouTube:
                            "subject to availability and privacy restrictions. " if is_detail else
                            "A full page may have more rows. ")
                         + "Metric/dimension combinations must be supported by Google."}
+
+    def analytics_history(self, query, before_id=None, limit=20):
+        if not 1 <= limit <= 100 or (before_id is not None and before_id < 1):
+            raise ValueError("limit must be 1–100 and before_id must be positive")
+        self.channel()
+        rows = self.store.analytics_history(self.settings.channel_id, self.analytics_params(query), before_id, limit)
+        return {"observations": rows, "retrieved_at": utc_now(),
+                "next_before_id": rows[-1]["observation_id"] if len(rows) == limit else None,
+                "note": "Every fresh Analytics response is retained. Cache reads create no new observation."}
 
     def retention(self, video_id, start_date, end_date, refresh=False):
         if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
@@ -253,7 +334,9 @@ class YouTube:
         results = []
         additive = ("views", "estimatedMinutesWatched", "subscribersGained", "subscribersLost")
         for video_id in query.video_ids:
-            item = {"video_id": video_id, "totals": None, "daily": [], "observations": []}
+            item = {"video_id": video_id, "totals": None, "daily": [], "observations": [],
+                    "metadata_fetched_at": details["fetched_at"],
+                    "freshness": freshness("data", details["fetched_at"])}
             results.append(item)
             video = videos.get(video_id)
             if video is None:
@@ -287,10 +370,12 @@ class YouTube:
                         daily=[{**r, "age_day": (date.fromisoformat(r["day"]) - start).days + 1}
                                for r in records],
                         missing_days=sorted(expected - present),
-                        fetched_at=report["fetched_at"], cached=report["cached"])
+                        fetched_at=report["fetched_at"], cached=report["cached"],
+                        freshness=freshness("analytics", report["fetched_at"], records=records))
             if complete:
                 item["totals"] = {metric: sum(r[metric] for r in records) for metric in additive}
         return {"age_days": query.age_days, "basis": "publication_reporting_day_is_day_1",
+                "retrieved_at": utc_now(), "metadata_fetched_at": details["fetched_at"],
                 "reporting_timezone": "America/Los_Angeles", "videos": results,
                 "note": "Day 1 is the possibly partial publication day in YouTube's reporting timezone; "
                         "these are not exact elapsed 24-hour windows. Missing days are unknown, not zero. "

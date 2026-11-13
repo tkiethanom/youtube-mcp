@@ -74,6 +74,18 @@ class GoogleErrorTests(unittest.TestCase):
             with store.db() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM kv WHERE kind='cache'").fetchone()[0], 0)
 
+    def test_invalid_success_json_is_an_upstream_error_not_invalid_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            yt = YouTube(SimpleNamespace(data=directory, channel_id='owned'), Store(directory / 'test.sqlite3'))
+            (directory / 'youtube-token.json').write_text('{}')
+            result = Mock(status_code=200)
+            result.json.side_effect = ValueError('bad JSON')
+            with patch('shelf.youtube.Credentials.from_authorized_user_file', return_value=Mock(valid=True, token='test-only')), patch(
+                    'shelf.youtube.requests.get', return_value=result), self.assertRaises(GoogleAPIError) as caught:
+                yt.request('analytics', 'reports', {})
+            self.assertEqual(caught.exception.category, 'upstream')
+
     def test_http_legacy_fields_and_mcp_error_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = Settings(Path(tmp), "https://youtube.example.com", "123", "owned",
