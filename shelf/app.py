@@ -52,6 +52,11 @@ def create_app(settings=None):
         return await run_in_threadpool(youtube.analytics, query, refresh)
 
     @mcp.tool(annotations=annotation)
+    async def get_analytics_history(query: AnalyticsQuery, before_id: int | None = None, limit: int = 20) -> dict:
+        """Read retained versions of this exact Analytics query, newest first. Cache hits create no versions."""
+        return await run_in_threadpool(youtube.analytics_history, query, before_id, limit)
+
+    @mcp.tool(annotations=annotation)
     async def get_retention(video_id: str, start_date: str, end_date: str, refresh: bool = False) -> dict:
         """Audience retention by elapsed-video ratio for one video and ISO date range."""
         return await run_in_threadpool(youtube.retention, video_id, start_date, end_date, refresh)
@@ -116,9 +121,7 @@ def create_app(settings=None):
 
     @app.exception_handler(GoogleAPIError)
     async def google_error(request, exc):
-        return JSONResponse({"error": exc.message, "google_status": exc.status,
-            "source": exc.source, "google_reasons": list(exc.reasons),
-            "occurred_at": exc.occurred_at}, 502 if exc.status >= 500 else 400)
+        return JSONResponse(exc.as_dict(), 502 if exc.status >= 500 else 400)
 
     @app.get("/healthz")
     async def health():
@@ -138,6 +141,10 @@ def create_app(settings=None):
     @app.post("/api/analytics")
     async def api_analytics(query: AnalyticsQuery, refresh: bool = False):
         return await query_analytics(query, refresh)
+
+    @app.post("/api/analytics-history")
+    async def api_analytics_history(query: AnalyticsQuery, before_id: int | None = None, limit: int = 20):
+        return await get_analytics_history(query, before_id, limit)
 
     @app.post("/api/compare-videos-by-age")
     async def api_compare_videos_by_age(query: AgeComparisonQuery, refresh: bool = False):

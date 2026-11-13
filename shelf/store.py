@@ -17,6 +17,11 @@ class Store:
                 value TEXT, PRIMARY KEY(channel_id, video_id, observed_at))""")
             db.execute("""CREATE INDEX IF NOT EXISTS observations_by_age
                 ON video_observations(channel_id, video_id, age_seconds)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS analytics_observations (
+                id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, request_key TEXT NOT NULL,
+                request_json TEXT NOT NULL, fetched_at TEXT NOT NULL, response_json TEXT NOT NULL)""")
+            db.execute("""CREATE INDEX IF NOT EXISTS analytics_observations_by_query
+                ON analytics_observations(channel_id, request_key, id)""")
         path.chmod(0o600)
 
     @contextmanager
@@ -66,3 +71,20 @@ class Store:
                     ORDER BY age_seconds {order}, observed_at DESC LIMIT 1""",
                     (channel_id, video_id, age_seconds)).fetchall())
             return [json.loads(row[0]) for row in rows]
+
+    def save_analytics(self, channel_id, params, response):
+        request_json = json.dumps(params, sort_keys=True)
+        with self.db() as db:
+            cursor = db.execute("""INSERT INTO analytics_observations
+                (channel_id,request_key,request_json,fetched_at,response_json) VALUES (?,?,?,?,?)""",
+                (channel_id, self.key(request_json), request_json, response["fetched_at"], json.dumps(response)))
+            return cursor.lastrowid
+
+    def analytics_history(self, channel_id, params, before_id=None, limit=20):
+        request_key = self.key(json.dumps(params, sort_keys=True))
+        with self.db() as db:
+            rows = db.execute("""SELECT id,request_json,response_json FROM analytics_observations
+                WHERE channel_id=? AND request_key=? AND (? IS NULL OR id<?)
+                ORDER BY id DESC LIMIT ?""", (channel_id, request_key, before_id, before_id, limit)).fetchall()
+            return [{"observation_id": row[0], "requested": json.loads(row[1]),
+                     "response": json.loads(row[2])} for row in rows]
