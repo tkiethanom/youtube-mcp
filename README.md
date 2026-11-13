@@ -4,6 +4,53 @@ Read-only, authenticated access to the configured channel's YouTube data and ana
 The existing OAuth setup uses local `.env`, `data/google-web-client.json`, and
 `data/youtube-token.json` files. Never commit these files or the SQLite database.
 
+## Review and traffic-source detail queries
+
+See [the backlog review](docs/backlog-review.md) for verified findings, open
+questions, GitHub issues, and the proposed implementation order.
+
+`query_analytics` (HTTP: `POST /api/analytics`) already supports traffic-source
+detail queries. These reports require explicit parameters rather than the
+generic report defaults:
+
+```json
+{
+  "query": {
+    "start_date": "2026-10-01",
+    "end_date": "2026-10-31",
+    "dimensions": "insightTrafficSourceDetail",
+    "filters": "video==VIDEO_ID_01;insightTrafficSourceType==RELATED_VIDEO",
+    "metrics": "views,estimatedMinutesWatched",
+    "sort": "-views",
+    "max_results": 25,
+    "start_index": 1
+  }
+}
+```
+
+For HTTP, send the inner `query` object as the JSON body. Replace `VIDEO_ID_01`
+with an owned video ID. This returns raw referring video IDs, not resolved
+titles or channels; `get_suggested_video_sources` remains planned.
+
+Traffic detail validation now rejects `max_results > 25`, missing/unsupported
+sort, a sort metric absent from `metrics`, or a missing
+`insightTrafficSourceType` filter before any Google call. Supported metrics in
+the current channel-report documentation are `views`, `estimatedMinutesWatched`,
+and `engagedViews`; sort is `-views` or `-estimatedMinutesWatched`.
+HTTP callers receive the existing validation format (422); MCP callers receive
+a tool validation error. Values are never silently clamped or rewritten.
+The metric list is not an exhaustive allowlist: live verification also accepted
+`averageViewDuration` with `RELATED_VIDEO`. Google validates metric combinations
+and source availability.
+
+`next_start_index` is a generic pagination hint, not proof another detail page
+is supported. A live referral request with `start_index=26` returned a generic
+error; coverage beyond the first 25 results remains unverified. Raw data and existing successful response
+fields are preserved. `SUBSCRIBER` means homepage feeds and subscription features,
+not the subscription status of the viewer. Do not equate it with Studio's entire
+Browse category. See Google's [dimensions](https://developers.google.com/youtube/analytics/dimensions#Traffic_Source_Dimensions)
+and [channel reports](https://developers.google.com/youtube/analytics/channel_reports#traffic-source-detail).
+
 ## Compare videos at the same age
 
 MCP tool: `compare_videos_by_age`
