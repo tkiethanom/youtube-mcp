@@ -45,7 +45,8 @@ fi
 
 # Password is the first encrypted stdin line, never an SSH command argument.
 # The remote Bash variable is not exported to Docker/application processes.
-printf -v remote_command "bash -c 'set +x; IFS= read -r DEPLOY_SUDO_PASSWORD; export -n DEPLOY_SUDO_PASSWORD; source /dev/stdin' -- %q %q %q" \
+# Read the inherited descriptor directly: Synology may deny reopening /dev/stdin.
+printf -v remote_command "bash -c 'set +x; IFS= read -r DEPLOY_SUDO_PASSWORD; export -n DEPLOY_SUDO_PASSWORD; IFS= read -r -d \"\" DEPLOY_SCRIPT || [[ -n \"\$DEPLOY_SCRIPT\" ]]; eval \"\$DEPLOY_SCRIPT\"' -- %q %q %q" \
   "$NAS_PROJECT_DIR" "$EXPECTED_SHA" "$NAS_DOCKER_BIN"
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 { printf '%s\n' "${NAS_SUDO_PASSWORD:-}"; cat "$script_dir/deploy_synology.sh"; } |

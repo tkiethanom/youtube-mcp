@@ -177,6 +177,7 @@ if command == 'run':
     def test_ssh_wrapper_keeps_password_out_of_arguments_and_cleans_files(self):
         self.write_executable('ssh', '''import os, subprocess, sys
 assert 'fixture-password' not in ' '.join(sys.argv)
+assert '/dev/stdin' not in sys.argv[-1]
 assert 'StrictHostKeyChecking=yes' in sys.argv
 assert os.environ['SSH_ASKPASS_REQUIRE'] == 'force'
 assert subprocess.check_output([os.environ['SSH_ASKPASS']], text=True).strip() == 'fixture-password'
