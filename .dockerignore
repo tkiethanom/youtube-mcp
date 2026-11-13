@@ -1,5 +1,6 @@
 .env
 data
+backups
 *client*.json
 .venv
 __pycache__

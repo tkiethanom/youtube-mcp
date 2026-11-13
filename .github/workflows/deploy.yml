@@ -1,0 +1,59 @@
+name: Test and deploy to Synology
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run tests and dependency checks
+        run: |
+          python -m unittest discover -s tests -v
+          python -m pip check
+          bash -n scripts/deploy_synology.sh
+          bash -n scripts/deploy_over_ssh.sh
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: nas
+    concurrency:
+      group: synology-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Deploy the tested main commit over SSH
+        env:
+          NAS_SSH_HOST: ${{ vars.NAS_SSH_HOST }}
+          NAS_SSH_USER: ${{ vars.NAS_SSH_USER || 'tawin' }}
+          NAS_SSH_PORT: ${{ vars.NAS_SSH_PORT || '2222' }}
+          NAS_PROJECT_DIR: ${{ vars.NAS_PROJECT_DIR || '/volume1/docker/youtube-mcp-git' }}
+          NAS_DOCKER_BIN: ${{ vars.NAS_DOCKER_BIN || '/usr/local/bin/docker' }}
+          NAS_SSH_KNOWN_HOSTS: ${{ secrets.NAS_SSH_KNOWN_HOSTS }}
+          NAS_SSH_PRIVATE_KEY: ${{ secrets.NAS_SSH_PRIVATE_KEY }}
+          NAS_SSH_PASSWORD: ${{ secrets.NAS_SSH_PASSWORD }}
+          NAS_SUDO_PASSWORD: ${{ secrets.NAS_SUDO_PASSWORD || secrets.NAS_SSH_PASSWORD }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash scripts/deploy_over_ssh.sh
