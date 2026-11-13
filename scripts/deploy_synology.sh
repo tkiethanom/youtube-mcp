@@ -104,7 +104,9 @@ docker_cmd image tag "$previous_image" "$rollback_tag"
 compose build shelf
 service_stopped=true
 compose stop -t 30 shelf
-compose run --rm --no-deps -T --user 0:0 \
+# The service drops all capabilities; the one-off backup needs to read files
+# owned by the application UID and write the private host-owned backup folder.
+compose run --rm --no-deps -T --user 0:0 --cap-add DAC_OVERRIDE \
   --volume "$project/data:/data:ro" \
   --volume "$backup_dir:/backup:rw" \
   --volume "$project/scripts/backup_deployment.py:/backup_deployment.py:ro" \

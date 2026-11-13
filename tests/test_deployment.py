@@ -86,6 +86,8 @@ if command == 'run':
         sys.exit(1)
     project = Path(args[args.index('--project-directory') + 1])
     mounts = [args[i+1] for i, arg in enumerate(args) if arg == '--volume']
+    assert args[args.index('--cap-add') + 1] == 'DAC_OVERRIDE'
+    assert any(m.endswith(':/data:ro') for m in mounts)
     destination = next(m.split(':/backup:')[0] for m in mounts if ':/backup:' in m)
     subprocess.run([sys.executable, str(project / 'scripts/backup_deployment.py'), str(project / 'data'), destination], check=True)
 ''')
