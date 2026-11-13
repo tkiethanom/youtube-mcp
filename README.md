@@ -33,7 +33,8 @@ with an owned video ID. This returns raw referring video IDs, not resolved
 titles or channels; `get_suggested_video_sources` remains planned.
 
 Traffic detail validation now rejects `max_results > 25`, missing/unsupported
-sort, a sort metric absent from `metrics`, or a missing
+sort, a sort metric absent from `metrics`, a page extending past position 25,
+or a missing
 `insightTrafficSourceType` filter before any Google call. Supported metrics in
 the current channel-report documentation are `views`, `estimatedMinutesWatched`,
 and `engagedViews`; sort is `-views` or `-estimatedMinutesWatched`.
@@ -43,13 +44,56 @@ The metric list is not an exhaustive allowlist: live verification also accepted
 `averageViewDuration` with `RELATED_VIDEO`. Google validates metric combinations
 and source availability.
 
-`next_start_index` is a generic pagination hint, not proof another detail page
-is supported. A live referral request with `start_index=26` returned a generic
-error; coverage beyond the first 25 results remains unverified. Raw data and existing successful response
-fields are preserved. `SUBSCRIBER` means homepage feeds and subscription features,
+Traffic-source detail is treated as a **top-25 report** for the requested filters,
+dates and sort order. Smaller pages within positions 1–25 still work. Requests
+must satisfy `start_index + max_results - 1 <= 25`; pages crossing that boundary
+fail validation rather than being silently shortened. At row 25,
+`next_start_index` is `null`, including when the returned page is full.
+Other reports keep their existing pagination behavior.
+
+Detail responses add this coverage information:
+
+```json
+{
+  "coverage": {
+    "type": "top_results",
+    "rank_limit": 25,
+    "completeness": "not_guaranteed",
+    "broader_coverage_source": "youtube_reporting_api"
+  }
+}
+```
+
+This describes the report's scope, not proof that exactly 25 sources exist or
+that an empty/short report is complete. Broader referral analysis requires bulk
+traffic-source reports, subject to availability and privacy restrictions. Bulk
+job creation and CSV import remain future work; this change creates no jobs.
+Raw data and existing response fields are preserved. Only the misleading next
+index beyond the report boundary is removed.
+
+`SUBSCRIBER` means homepage feeds and subscription features,
 not the subscription status of the viewer. Do not equate it with Studio's entire
 Browse category. See Google's [dimensions](https://developers.google.com/youtube/analytics/dimensions#Traffic_Source_Dimensions)
 and [channel reports](https://developers.google.com/youtube/analytics/channel_reports#traffic-source-detail).
+
+## Google error diagnostics
+
+Google failures now include their status and API source in MCP error text,
+plus Google's reason codes when supplied. For example:
+
+```text
+Google API error (status=500; source=analytics; reason=backendError,INTERNAL): Internal error encountered.
+```
+
+Reason codes are optional; the server does not invent a reason when Google omits
+one. HTTP error responses retain `error`, `google_status`, and the existing HTTP
+status mapping, and add `source`, `google_reasons`, and a UTC `occurred_at`.
+Local connection/setup errors have no upstream source or reason. Successful
+responses are unchanged. Full response bodies and request headers are not exposed;
+Google's bounded error message continues to be forwarded as before.
+
+This is diagnostic groundwork, not complete error classification. See
+[the pagination investigation and coverage decision](docs/referral-pagination.md).
 
 ## Compare videos at the same age
 

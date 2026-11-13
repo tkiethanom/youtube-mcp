@@ -188,3 +188,13 @@ Read-only checks on 2026-11-13 established:
 
 The original issue descriptions predate this evidence; use this follow-up when
 working on the remaining backlog.
+
+## Subsequent top-25 decision
+
+The user subsequently chose to treat traffic-source detail as top 25 and use
+bulk Reporting for broader referral coverage. The next local change adds explicit
+coverage metadata, rejects pages crossing position 25, removes next-page hints
+beyond that position, and adds Google status/reason visibility. See the
+[pagination investigation](referral-pagination.md) for the evidence, precise
+contract, test coverage and remaining verification. This supersedes earlier
+suggestions to paginate this detail report beyond the first 25 positions.

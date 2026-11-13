@@ -48,7 +48,7 @@ def create_app(settings=None):
 
     @mcp.tool(annotations=annotation)
     async def query_analytics(query: AnalyticsQuery, refresh: bool = False) -> dict:
-        """Query channel metrics by dates, dimensions and filters. Google supports specific combinations, not every arbitrary cross-tab. Use start_index to paginate. Dates use YouTube reporting days."""
+        """Query channel metrics by dates, dimensions and filters. Google supports specific combinations, not every arbitrary cross-tab. Use start_index to paginate. Traffic-source detail is top 25 only; use bulk Reporting for broader coverage. Dates use YouTube reporting days."""
         return await run_in_threadpool(youtube.analytics, query, refresh)
 
     @mcp.tool(annotations=annotation)
@@ -116,7 +116,9 @@ def create_app(settings=None):
 
     @app.exception_handler(GoogleAPIError)
     async def google_error(request, exc):
-        return JSONResponse({"error": exc.message, "google_status": exc.status}, 502 if exc.status >= 500 else 400)
+        return JSONResponse({"error": exc.message, "google_status": exc.status,
+            "source": exc.source, "google_reasons": list(exc.reasons),
+            "occurred_at": exc.occurred_at}, 502 if exc.status >= 500 else 400)
 
     @app.get("/healthz")
     async def health():
