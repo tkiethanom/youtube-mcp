@@ -1,9 +1,10 @@
 # Backlog review — 2026-11-13
 
 Reviewed repository baseline: `f43d47de904e0902f2cd5f03f72f06f790d3c8b9`.
-This is a code and official-documentation review with mocked API tests, not a
-production audit. No private Google credentials, NAS filesystem, or live channel
-reports were available or accessed. No production deployment was performed.
+The initial review used code, official documentation and mocked API tests.
+A subsequent read-only verification used the connected Intergalactic Shelf MCP;
+see the correction below. No NAS filesystem or credential files were accessed,
+and no production deployment was performed.
 
 ## Existing architecture and contracts
 
@@ -40,7 +41,10 @@ fetch timestamps, publication timestamps and elapsed ages. Cached reads do not
 create samples. Samples survive cache expiry and auth clearing. No scheduler
 exists. Raw Analytics history is currently only cached and is later evicted.
 
-## Findings against the backlog
+## Initial findings against the backlog
+
+These initial findings precede the live checks recorded below; the follow-up
+section supersedes the initial uncertainty about sampled watch-time discrepancies.
 
 | Backlog | Status and evidence | Tracking |
 | --- | --- | --- |
@@ -76,9 +80,10 @@ Documentation checked on 2026-11-13:
 3. [Channel reports](https://developers.google.com/youtube/analytics/channel_reports#traffic-source-detail):
    traffic detail requires `maxResults <= 25`, an explicit supported sort
    (`-views` or `-estimatedMinutesWatched`) and a source-type filter. The listed
-   metrics are `engagedViews`, `views`, `estimatedMinutesWatched`. Do not append
-   `averageViewDuration`, subscriber gains/losses, `day`, or a `video` dimension
-   to the confirmed referral query. Traffic-type reports have their own supported
+   metrics are `engagedViews`, `views`, `estimatedMinutesWatched`, but this table
+   is not exhaustive in practice: live verification also accepted
+   `averageViewDuration`. Other metrics and dimensions need separate verification.
+   Traffic-type reports have their own supported
    dimensions/filters and a queried-videos × days limit of 50,000.
 4. [Query reference](https://developers.google.com/youtube/analytics/reference/reports/query):
    `startIndex` is 1-based pagination. Data ends at the last date for which **all
@@ -102,11 +107,12 @@ Comparisons should keep each upload and date window identifiable before aggregat
 
 ## First bounded change
 
-Verified defect: a traffic-detail query inherited `max_results=200`, blank sort
-and incompatible subscriber/average-duration metrics. These requests were sent to
-Google and rejected without local corrective guidance.
+Verified validation gap: a traffic-detail query inherited `max_results=200`
+and blank sort despite documented report-specific constraints. A live request
+with 200 results returned a generic tool error; the connector did not expose an
+upstream status/reason, so this alone does not prove Google's exact rejection.
 
-`AnalyticsQuery` now rejects invalid traffic-detail limits, sorting, metric lists
+`AnalyticsQuery` now rejects invalid traffic-detail limits, sorting,
 and absent source filters before network access. It provides the required names
 and example filter in validation errors. It does not rewrite user queries or
 source values, or claim to validate all Google report combinations. Existing
@@ -146,3 +152,39 @@ cache and authentication tests remain part of the full suite.
 
 No production update is part of this assignment. Future releases should use a
 separate reviewed change, verified backups and the existing persistent data mount.
+
+## Follow-up verification and correction
+
+Live verification found that the draft's exhaustive metric allowlist would reject
+a working query. The corrected implementation removes that allowlist and retains
+the report-specific limit, sort and required-filter validation. PR #9 is being
+closed in favor of the user-authorized merge of these verified corrections.
+
+Read-only checks on 2026-11-13 established:
+
+- The connected MCP exposes raw Google tables and mapped records; for the sampled
+  daily report they matched exactly. A watch-time arithmetic discrepancy exists
+  in those raw values, so changing record mapping would not explain it.
+- Adding `engagedViews` produces a substantially more plausible duration
+  denominator for the sampled report, but does not establish a universal identity.
+  Daily watch-minute sums also differ slightly from the aggregate report. Preserve
+  Google's values and investigate definitions/rounding/aggregation separately.
+- The baseline referral query succeeds with 25 results. The same query with
+  `averageViewDuration` also succeeds. This contradicts the proposed exhaustive
+  metric allowlist, which has now been removed and covered by a regression
+  test. Metric support remains Google's responsibility.
+- `SUBSCRIBER` detail returned `what-to-watch`, `my-history`, `watch-later`, and
+  `/my_subscriptions`. Preserve unfamiliar raw detail values; documentation lists
+  are not exhaustive evidence for rejecting them.
+- `start_index=26` returned a generic tool error, not a usable second page. The
+  server's emitted next index is therefore not proof this report can be paginated
+  beyond 25. The exact limit/error cause still needs upstream error evidence.
+- The sampled daily query requested through November 12, but only returned days
+  through November 11. This establishes the latest observed day for that query,
+  not global account freshness.
+- Offline differential checks found identical outgoing requests and results for
+  eight valid query patterns before and after the original patch. These checks
+  establish local compatibility only, not Google support for every pattern.
+
+The original issue descriptions predate this evidence; use this follow-up when
+working on the remaining backlog.

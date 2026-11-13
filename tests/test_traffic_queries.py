@@ -43,8 +43,6 @@ class TrafficQueryTests(unittest.TestCase):
                  ({"sort": "views"}, "requires sort="),
                  ({"sort": "-likes"}, "requires sort="),
                  ({"sort": "-estimatedMinutesWatched", "metrics": "views"}, "included in metrics"),
-                 ({"metrics": "views,averageViewDuration"}, "supports metrics"),
-                 ({"metrics": "views,subscribersGained"}, "supports metrics"),
                  ({"filters": "video==abcdefghijk"}, "requires an insightTrafficSourceType filter")]
         for changes, message in cases:
             with self.subTest(changes=changes), self.assertRaisesRegex(ValidationError, message):
@@ -55,6 +53,10 @@ class TrafficQueryTests(unittest.TestCase):
                              "dimensions": "insightTrafficSourceDetail,creatorContentType",
                              "metrics": "views,estimatedMinutesWatched,engagedViews"}
         self.assertEqual(AnalyticsQuery(**params).sort, "-estimatedMinutesWatched")
+
+    def test_live_supported_average_duration_is_not_blocked_by_catalog_omission(self):
+        params = detail() | {"metrics": "views,estimatedMinutesWatched,averageViewDuration"}
+        self.assertEqual(AnalyticsQuery(**params).metrics, params["metrics"])
 
     def test_other_reports_keep_existing_defaults(self):
         query = AnalyticsQuery(start_date="2025-01-01", end_date="2025-01-31")

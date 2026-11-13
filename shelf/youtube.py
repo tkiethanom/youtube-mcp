@@ -58,10 +58,9 @@ class AnalyticsQuery(BaseModel):
                 raise ValueError("insightTrafficSourceDetail requires sort=-views or -estimatedMinutesWatched")
             if self.sort[1:] not in self.metrics.split(","):
                 raise ValueError("The traffic-source detail sort metric must be included in metrics")
-            supported = {"views", "estimatedMinutesWatched", "engagedViews"}
-            if set(self.metrics.split(",")) - supported:
-                raise ValueError("insightTrafficSourceDetail supports metrics views,estimatedMinutesWatched,engagedViews; "
-                                 "use views,estimatedMinutesWatched for referral reports")
+            # Do not infer an exhaustive metric allowlist from the report table:
+            # live RELATED_VIDEO queries also accept averageViewDuration.
+            # Google remains the authority on metric-combination support.
             if not any(re.fullmatch(r"insightTrafficSourceType==[A-Z_]+", part)
                        for part in self.filters.split(";")):
                 raise ValueError("insightTrafficSourceDetail requires an insightTrafficSourceType filter, "

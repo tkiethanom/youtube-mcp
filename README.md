@@ -33,16 +33,19 @@ with an owned video ID. This returns raw referring video IDs, not resolved
 titles or channels; `get_suggested_video_sources` remains planned.
 
 Traffic detail validation now rejects `max_results > 25`, missing/unsupported
-sort, a sort metric absent from `metrics`, unsupported metrics, or a missing
+sort, a sort metric absent from `metrics`, or a missing
 `insightTrafficSourceType` filter before any Google call. Supported metrics in
 the current channel-report documentation are `views`, `estimatedMinutesWatched`,
 and `engagedViews`; sort is `-views` or `-estimatedMinutesWatched`.
 HTTP callers receive the existing validation format (422); MCP callers receive
 a tool validation error. Values are never silently clamped or rewritten.
-Google still validates other combinations and source availability.
+The metric list is not an exhaustive allowlist: live verification also accepted
+`averageViewDuration` with `RELATED_VIDEO`. Google validates metric combinations
+and source availability.
 
-Use `next_start_index` for another page when present, but a full page alone does
-not prove exhaustive referral coverage. Raw data and existing successful response
+`next_start_index` is a generic pagination hint, not proof another detail page
+is supported. A live referral request with `start_index=26` returned a generic
+error; coverage beyond the first 25 results remains unverified. Raw data and existing successful response
 fields are preserved. `SUBSCRIBER` means homepage feeds and subscription features,
 not the subscription status of the viewer. Do not equate it with Studio's entire
 Browse category. See Google's [dimensions](https://developers.google.com/youtube/analytics/dimensions#Traffic_Source_Dimensions)
