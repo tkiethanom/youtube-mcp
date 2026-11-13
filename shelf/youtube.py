@@ -54,6 +54,10 @@ class AnalyticsQuery(BaseModel):
         if "insightTrafficSourceDetail" in self.dimensions.split(","):
             if self.max_results > 25:
                 raise ValueError("insightTrafficSourceDetail requires max_results <= 25")
+            if self.start_index + self.max_results - 1 > 25:
+                raise ValueError("insightTrafficSourceDetail is a top-25 report: "
+                                 "start_index + max_results - 1 must be <= 25; "
+                                 "use YouTube Reporting API bulk reports for broader coverage")
             if self.sort not in ("-views", "-estimatedMinutesWatched"):
                 raise ValueError("insightTrafficSourceDetail requires sort=-views or -estimatedMinutesWatched")
             if self.sort[1:] not in self.metrics.split(","):
@@ -69,9 +73,42 @@ class AnalyticsQuery(BaseModel):
 
 
 class GoogleAPIError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, *, source=None, reasons=()):
         self.status, self.message = status, message
-        super().__init__(message)
+        self.source = source
+        self.reasons = tuple(dict.fromkeys(reasons))
+        self.occurred_at = datetime.now(timezone.utc).isoformat()
+        # FastMCP forwards exception text; include provenance even when Google's
+        # message is only "Internal error encountered." Keep raw bodies private.
+        context = [f"status={status}"]
+        if source:
+            context.append(f"source={source}")
+        if self.reasons:
+            context.append("reason=" + ",".join(self.reasons))
+        super().__init__(f"Google API error ({'; '.join(context)}): {message}")
+
+    @classmethod
+    def from_response(cls, result, source):
+        message, reasons = "Google rejected the request", []
+        try:
+            payload = result.json()
+        except ValueError:
+            payload = None
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            if isinstance(error.get("message"), str):
+                message = error["message"][:1000]
+            entries = error.get("errors", [])
+            if isinstance(entries, list):
+                for entry in entries[:10]:
+                    reason = entry.get("reason") if isinstance(entry, dict) else None
+                    if isinstance(reason, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,99}", reason):
+                        reasons.append(reason)
+            # Some Google APIs only provide the canonical status name.
+            canonical = error.get("status")
+            if isinstance(canonical, str) and re.fullmatch(r"[A-Z][A-Z_]{0,99}", canonical):
+                reasons.append(canonical)
+        return cls(result.status_code, message, source=source, reasons=reasons)
 
 
 class AgeComparisonQuery(BaseModel):
@@ -115,11 +152,7 @@ class YouTube:
                 raise GoogleAPIError(502, "Google API could not be reached") from None
             if result.status_code != 200:
                 # Google error messages aid query correction, but never expose request headers.
-                try:
-                    message = result.json().get("error", {}).get("message", "Google rejected the request")
-                except ValueError:
-                    message = "Google rejected the request"
-                raise GoogleAPIError(result.status_code, str(message)[:1000])
+                raise GoogleAPIError.from_response(result, service)
             response = {"data": result.json(), "cached": False,
                         "fetched_at": datetime.now(timezone.utc).isoformat(), "source": service}
             if service == "data" and path == "videos":
@@ -177,9 +210,23 @@ class YouTube:
         result = self.request("analytics", "reports", params, refresh)
         columns = [v["name"] for v in result["data"].get("columnHeaders", [])]
         rows = result["data"].get("rows", [])
+        is_detail = "insightTrafficSourceDetail" in query.dimensions.split(",")
+        next_index = query.start_index + len(rows) if len(rows) == query.max_results else None
+        if is_detail and next_index is not None and next_index > 25:
+            next_index = None
+        coverage = {"coverage": {
+            "type": "top_results", "rank_limit": 25,
+            "completeness": "not_guaranteed",
+            "broader_coverage_source": "youtube_reporting_api"}} if is_detail else {}
         return {**result, "records": [dict(zip(columns, row)) for row in rows],
-                "requested": params, "next_start_index": query.start_index + len(rows) if len(rows) == query.max_results else None,
-                "note": "Data may lag or be suppressed; empty rows are not proof of zero activity. A full page may have more rows. Metric/dimension combinations must be supported by Google."}
+                "requested": params, "next_start_index": next_index, **coverage,
+                "note": "Data may lag or be suppressed; empty rows are not proof of zero activity. "
+                        + ("Traffic-source detail is treated as a top-25 report ranked by the requested sort. "
+                           "Pages are limited to positions 1–25; this is not a guaranteed complete referral list. "
+                           "Use YouTube Reporting API bulk traffic-source reports for broader coverage, "
+                           "subject to availability and privacy restrictions. " if is_detail else
+                           "A full page may have more rows. ")
+                        + "Metric/dimension combinations must be supported by Google."}
 
     def retention(self, video_id, start_date, end_date, refresh=False):
         if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
