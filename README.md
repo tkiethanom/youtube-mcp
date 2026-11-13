@@ -164,6 +164,11 @@ existing authentication or cache tables. No additional Google scopes are needed.
 
 ## Update on Synology
 
+The [GitHub deployment workflow](docs/github-deployment.md) runs tests, connects
+over SSH, updates the checkout to the tested main commit, backs up private data,
+and rebuilds/restarts the existing Compose service. Configure its Actions secrets
+and host variable before enabling the first live deployment.
+
 Before the first update, stop the service and back up the persistent database:
 
 ```bash
